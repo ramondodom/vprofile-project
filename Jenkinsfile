@@ -7,12 +7,22 @@ pipeline {
     }
 */
     environment {
-        registry = "imranvisualpath/vproappdock"
-        registryCredential = 'dockerhub'
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_URL = "172.31.40.209:8081"
+        NEXUS_REPOSITORY = "vprofile-release"
+        NEXUS_REPO_ID    = "vprofile-release"
+        NEXUS_CREDENTIAL_ID = "nexuslogin"
+        ARTVERSION = "${env.BUILD_ID}"
     }
 
     stages{
 
+        stage('Fetch Code') {
+            steps {
+                git branch: 'paac', url: 'https://github.com/devopshydclub/vprofile-project.git'
+            }
+        }
         stage('BUILD'){
             steps {
                 sh 'mvn clean install -DskipTests'
@@ -48,32 +58,6 @@ pipeline {
             }
         }
 
-
-        stage('Building image') {
-            steps{
-              script {
-                dockerImage = docker.build registry + ":$BUILD_NUMBER"
-              }
-            }
-        }
-        
-        stage('Deploy Image') {
-          steps{
-            script {
-              docker.withRegistry( '', registryCredential ) {
-                dockerImage.push("$BUILD_NUMBER")
-                dockerImage.push('latest')
-              }
-            }
-          }
-        }
-
-        stage('Remove Unused docker image') {
-          steps{
-            sh "docker rmi $registry:$BUILD_NUMBER"
-          }
-        }
-
         stage('CODE ANALYSIS with SONARQUBE') {
 
             environment {
@@ -97,12 +81,44 @@ pipeline {
                 }
             }
         }
-        stage('Kubernetes Deploy') {
-	  agent { label 'KOPS' }
+
+        stage("Publish to Nexus Repository Manager") {
             steps {
-                    sh "helm upgrade --install --force vproifle-stack helm/vprofilecharts --set appimage=${registry}:${BUILD_NUMBER} --namespace prod"
+                script {
+                    pom = readMavenPom file: "pom.xml";
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
+                    artifactPath = filesByGlob[0].path;
+                    artifactExists = fileExists artifactPath;
+                    if(artifactExists) {
+                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version} ARTVERSION";
+                        nexusArtifactUploader(
+                                nexusVersion: NEXUS_VERSION,
+                                protocol: NEXUS_PROTOCOL,
+                                nexusUrl: NEXUS_URL,
+                                groupId: pom.groupId,
+                                version: ARTVERSION,
+                                repository: NEXUS_REPOSITORY,
+                                credentialsId: NEXUS_CREDENTIAL_ID,
+                                artifacts: [
+                                        [artifactId: pom.artifactId,
+                                         classifier: '',
+                                         file: artifactPath,
+                                         type: pom.packaging],
+                                        [artifactId: pom.artifactId,
+                                         classifier: '',
+                                         file: "pom.xml",
+                                         type: "pom"]
+                                ]
+                        );
+                    }
+                    else {
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                }
             }
         }
+
 
     }
 
